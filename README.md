@@ -34,6 +34,10 @@ retain set con loss non pesata.
 
 ## Riproduzione
 
+Lo script richiede la cartella `data/` della repo ufficiale dell'hackathon
+(non inclusa qui) nella root del progetto: i CSV di training,
+`forget_data.csv` e il `model_artifact` originale.
+
 ```bash
 pip install -r requirements.txt
 python main.py
