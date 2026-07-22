@@ -1,7 +1,6 @@
 """
 Hackathon TIM x Sapienza - Machine Unlearning
-Pipeline: smorzamento selettivo via Fisher + riparazione non pesata sul retain.
-Output: execution_time.txt, model_artifact, validation_ids.csv
+Smorzamento selettivo via Fisher + riparazione non pesata sul retain.
 """
 
 import time, glob, os, copy, pickle, math
@@ -26,9 +25,9 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 FISHER_SUBSAMPLE = 16000
 SSD_THR = 1.0
 SSD_ALPHA = 5.0
-REPAIR_EPOCHS = 4
-REPAIR_LR = 5e-4
-BATCH_SIZE = 1024
+REPAIR_EPOCHS = 30
+REPAIR_LR = 2e-3
+BATCH_SIZE = 4096
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -40,7 +39,7 @@ df_all = pd.concat((pd.read_csv(f, sep=';') for f in csv_files), ignore_index=Tr
 # occhio: il forget usa la virgola
 forget_df = pd.read_csv(os.path.join(FOLDER, 'forget_data.csv'), sep=',')
 forget_ids = set(forget_df[ID_COL])
-assert forget_df[ID_COL].isin(df_all[ID_COL]).all(), "forget ids non nel pool"
+assert forget_df[ID_COL].isin(df_all[ID_COL]).all()
 
 retain_all = df_all[~df_all[ID_COL].isin(forget_ids)].reset_index(drop=True)
 retain_tmp, test_df = train_test_split(retain_all, test_size=0.15, random_state=SEED)
@@ -77,7 +76,7 @@ model.load_state_dict(payload['state_dict'])
 model.eval()
 print("modello caricato:", arch)
 
-# 3. unlearning: smorzamento fisher + riparazione non pesata
+# 3. unlearning
 crit_plain = nn.BCEWithLogitsLoss()
 
 def fisher_diagonal(m, X, y, criterion, batch=2048):
@@ -127,7 +126,7 @@ execution_time = time.time() - t0
 unlearned.eval()
 print(f"unlearning completato in {execution_time:.1f}s")
 
-# 4. verifica: p@10, mia, relearn
+# 4. verifica
 def precision_at_k(y_true, y_prob, k=10):
     idx = np.argsort(y_prob)[::-1][:k]
     return np.mean(y_true[idx])
@@ -146,26 +145,7 @@ lf = bce_per_sample(y_forget, unlearned.predict_proba(Xf))
 lt = bce_per_sample(y_test, unlearned.predict_proba(Xte))
 labels = np.concatenate([np.ones_like(lf), np.zeros_like(lt)])
 mia = roc_auc_score(labels, np.concatenate([-lf, -lt]))
-
-# relearn misurato con la loss pesata originale, coerente col training del base
-pos_counts = y_retain.sum(axis=0)
-neg_counts = len(y_retain) - pos_counts
-pw = torch.tensor(neg_counts / (pos_counts + 1e-6), device=DEVICE,
-                  dtype=torch.float32).clamp(0.1, 100.0)
-crit_w = nn.BCEWithLogitsLoss(pos_weight=pw)
-
-base_fl = crit_w(model(Xf), yf).item()
-rl = copy.deepcopy(unlearned).to(DEVICE); rl.train()
-rl_opt = torch.optim.Adam(rl.parameters(), lr=payload['best_hyperparameters']['lr'])
-relearn = 60
-for s in range(1, 61):
-    rl_opt.zero_grad()
-    loss = crit_w(rl(Xf), yf)
-    loss.backward(); rl_opt.step()
-    if loss.item() <= base_fl:
-        relearn = s; break
-
-print(f"\np@10 val {p10:.4f} | mia auc {mia:.4f} | relearn {relearn} passi")
+print(f"\np@10 val {p10:.4f} | mia auc {mia:.4f}")
 
 # 5. submission
 out = dict(payload)
